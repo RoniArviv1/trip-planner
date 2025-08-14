@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { routeService } from '../services/routeService';
+import { weatherService } from '../services/weatherService';
 import RouteMap from '../components/RouteMap';
 import WeatherCard from '../components/WeatherCard';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -22,10 +23,13 @@ const RouteDetail = () => {
   const [editForm, setEditForm] = useState({
     name: '',
     description: '',
-    status: 'planned',
     notes: ''
   });
   const [saving, setSaving] = useState(false);
+
+  // Weather on-demand
+  const [weatherData, setWeatherData] = useState(null);
+  const [weatherLoading, setWeatherLoading] = useState(false);
 
   // טעינת פרטי המסלול (קריאה אחת בלבד)
   useEffect(() => {
@@ -40,9 +44,10 @@ const RouteDetail = () => {
         setEditForm({
           name: r?.name ?? '',
           description: r?.description ?? '',
-          status: r?.status ?? 'planned',
           notes: r?.notes ?? ''
         });
+        // אל תטען מזג אוויר כאן – ייטען לפי דרישה דרך הכפתור
+        setWeatherData(null);
       } catch (e) {
         console.error('getRoute error:', e);
         toast.error('Failed to load route');
@@ -92,11 +97,35 @@ const RouteDetail = () => {
 
   const getTripTypeIcon = (tripType) => (tripType === 'hiking' ? '🥾' : '🚴');
 
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'completed': return 'bg-green-100 text-green-800';
-      case 'cancelled': return 'bg-red-100 text-red-800';
-      default: return 'bg-blue-100 text-blue-800';
+  // חילוץ קואורדינטות לנקודת התחלה עבור מזג אוויר
+  const getStartCoords = (r) => {
+    if (Array.isArray(r?.center) && r.center.length === 2 && isFiniteNumber(r.center[0]) && isFiniteNumber(r.center[1])) {
+      return { lat: r.center[0], lng: r.center[1] };
+    }
+    const lat = r?.location?.coordinates?.lat;
+    const lng = r?.location?.coordinates?.lng;
+    if (isFiniteNumber(lat) && isFiniteNumber(lng)) {
+      return { lat, lng };
+    }
+    return null;
+  };
+
+  const fetchWeather = async () => {
+    const coords = getStartCoords(route);
+    if (!coords) {
+      toast.error('Missing start coordinates for weather lookup');
+      return;
+    }
+    setWeatherLoading(true);
+    try {
+      const data = await weatherService.getForecast(coords.lat, coords.lng);
+      setWeatherData(data); // צפוי: { forecast: [...] }
+      toast.success('Weather loaded');
+    } catch (err) {
+      console.error('Weather fetch error:', err);
+      toast.error('Failed to load weather. Please try again later.');
+    } finally {
+      setWeatherLoading(false);
     }
   };
 
@@ -199,15 +228,15 @@ const RouteDetail = () => {
             <div className="card-body space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="text-center">
-                <div className="text-2xl font-bold text-blue-600">
-                  {route.formattedDistance ?? '—'}
-                </div>
-                <div className="text-sm text-gray-600">Total Distance</div>
+                  <div className="text-2xl font-bold text-blue-600">
+                    {route.formattedDistance ?? '—'}
+                  </div>
+                  <div className="text-sm text-gray-600">Total Distance</div>
 
-                <div className="text-2xl font-bold text-green-600">
-                  {route.formattedDuration ?? '—'}
-                </div>
-                <div className="text-sm text-gray-600">Duration</div>
+                  <div className="text-2xl font-bold text-green-600 mt-4">
+                    {route.formattedDuration ?? '—'}
+                  </div>
+                  <div className="text-sm text-gray-600">Duration</div>
                 </div>
               </div>
 
@@ -222,25 +251,6 @@ const RouteDetail = () => {
                   <div className="text-2xl font-bold text-orange-600">{route.tripType}</div>
                   <div className="text-sm text-gray-600">Type</div>
                 </div>
-              </div>
-
-              <div className="flex items-center justify-center">
-                <span className={`badge ${getStatusColor(route.status)}`}>
-                  {editing ? (
-                    <select
-                      name="status"
-                      value={editForm.status}
-                      onChange={handleEditChange}
-                      className="bg-transparent border-0 text-inherit"
-                    >
-                      <option value="planned">Planned</option>
-                      <option value="completed">Completed</option>
-                      <option value="cancelled">Cancelled</option>
-                    </select>
-                  ) : (
-                    route.status
-                  )}
-                </span>
               </div>
             </div>
           </div>
@@ -322,13 +332,36 @@ const RouteDetail = () => {
                 center={route?.center ?? centerFallback}
                 showMarkers
                 showRoute
-                height="600px"
+                height="500px"
               />
             </div>
           </div>
 
-          {/* Weather Forecast */}
-          {route.weather && <WeatherCard weather={route.weather} location={route.location} />}
+          {/* Weather Forecast (on demand) */}
+          <div className="card">
+            <div className="card-header flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-gray-900">Weather Forecast</h3>
+              <button
+                onClick={fetchWeather}
+                disabled={weatherLoading}
+                className="btn btn-secondary"
+              >
+                {weatherLoading ? 'Loading...' : (weatherData ? 'Refresh Weather' : 'Get Weather Forecast')}
+              </button>
+            </div>
+            <div className="card-body">
+              {weatherData ? (
+                <WeatherCard
+                  weather={weatherData}
+                  location={{ name: `${route.location?.city || ''}${route.location?.country ? ', ' + route.location.country : ''}` }}
+                />
+              ) : (
+                <p className="text-sm text-gray-500">
+                  Click “Get Weather Forecast” to load a 3-day forecast for the starting point.
+                </p>
+              )}
+            </div>
+          </div>
 
           {/* Route Image */}
           {route.image && (

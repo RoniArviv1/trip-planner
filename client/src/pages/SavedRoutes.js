@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { routeService } from '../services/routeService';
+import { weatherService } from '../services/weatherService';
 import RouteMap from '../components/RouteMap';
 import WeatherCard from '../components/WeatherCard';
 import LoadingSpinner from '../components/LoadingSpinner';
-import { MapPin, Calendar, Eye, Filter, Plus, Trash2 } from 'lucide-react';
+import { MapPin, Calendar, Eye, Filter, Plus, Trash2, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 const SavedRoutes = () => {
@@ -12,7 +13,11 @@ const SavedRoutes = () => {
   const [selectedRoute, setSelectedRoute] = useState(null);
   const [loading, setLoading] = useState(true);
   const [selectLoading, setSelectLoading] = useState(false);
-  const [filter, setFilter] = useState({ tripType: '', status: '' });
+  const [filter, setFilter] = useState({ tripType: '' });
+
+  // Weather on-demand state
+  const [weatherData, setWeatherData] = useState(null);
+  const [weatherLoading, setWeatherLoading] = useState(false);
 
   useEffect(() => {
     fetchRoutes();
@@ -30,14 +35,15 @@ const SavedRoutes = () => {
     }
   };
 
-  // בחירת מסלול → שליפת פרטים מלאים מהשרת
+  // בחירת מסלול → שליפת פרטים מלאים מהשרת (בלי תחזית אוטומטית)
   const handleSelectRoute = async (routeSummary) => {
     try {
       setSelectLoading(true);
+      setWeatherData(null); // reset old weather when switching
       const id = routeSummary.id ?? routeSummary._id;
       const payload = await routeService.getRoute(id, { noCache: true });
       const full = payload.route ?? payload; // גמיש לשתי הצורות
-      setSelectedRoute(full); // כולל routeData + center
+      setSelectedRoute(full); // כולל routeData + center (ללא weather)
     } catch (e) {
       console.error('getRoute error:', e);
       toast.error('Failed to load route details');
@@ -51,7 +57,10 @@ const SavedRoutes = () => {
     try {
       await routeService.deleteRoute(routeId);
       setRoutes(prev => prev.filter(r => (r.id ?? r._id) !== routeId));
-      if ((selectedRoute?.id ?? selectedRoute?._id) === routeId) setSelectedRoute(null);
+      if ((selectedRoute?.id ?? selectedRoute?._id) === routeId) {
+        setSelectedRoute(null);
+        setWeatherData(null);
+      }
       toast.success('Route deleted successfully');
     } catch (error) {
       console.error('Error deleting route:', error);
@@ -61,7 +70,6 @@ const SavedRoutes = () => {
 
   const filteredRoutes = routes.filter(route => {
     if (filter.tripType && route.tripType !== filter.tripType) return false;
-    if (filter.status && route.status !== filter.status) return false;
     return true;
   });
 
@@ -70,11 +78,32 @@ const SavedRoutes = () => {
 
   const getTripTypeIcon = (tripType) => (tripType === 'hiking' ? '🥾' : '🚴');
 
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'completed': return 'bg-green-100 text-green-800';
-      case 'cancelled': return 'bg-red-100 text-red-800';
-      default: return 'bg-blue-100 text-blue-800';
+  // כפתור הבאת תחזית "לפי דרישה"
+  const fetchWeather = async () => {
+    if (!selectedRoute) return;
+    // center קודם, אחרת location.coordinates
+    let lat, lng;
+    if (Array.isArray(selectedRoute?.center) && selectedRoute.center.length === 2) {
+      lat = selectedRoute.center[0];
+      lng = selectedRoute.center[1];
+    } else {
+      lat = selectedRoute?.location?.coordinates?.lat;
+      lng = selectedRoute?.location?.coordinates?.lng;
+    }
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      toast.error('Missing start coordinates for weather lookup');
+      return;
+    }
+    setWeatherLoading(true);
+    try {
+      const data = await weatherService.getForecast(lat, lng);
+      setWeatherData(data); // { forecast: [...] }
+      toast.success('Weather loaded');
+    } catch (err) {
+      console.error('Weather fetch error:', err);
+      toast.error('Failed to load weather.');
+    } finally {
+      setWeatherLoading(false);
     }
   };
 
@@ -118,19 +147,6 @@ const SavedRoutes = () => {
                   <option value="">All Types</option>
                   <option value="hiking">Hiking</option>
                   <option value="cycling">Cycling</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Status</label>
-                <select
-                  value={filter.status}
-                  onChange={(e) => setFilter(prev => ({ ...prev, status: e.target.value }))}
-                  className="input"
-                >
-                  <option value="">All Status</option>
-                  <option value="planned">Planned</option>
-                  <option value="completed">Completed</option>
-                  <option value="cancelled">Cancelled</option>
                 </select>
               </div>
             </div>
@@ -192,7 +208,6 @@ const SavedRoutes = () => {
                         <span className="text-blue-600 font-medium">{route.formattedDistance}</span>
                         <span className="text-green-600 font-medium">{route.formattedDuration}</span>
                       </div>
-                      <span className={`badge ${getStatusColor(route.status)}`}>{route.status}</span>
                     </div>
                   </div>
                 </div>
@@ -221,10 +236,6 @@ const SavedRoutes = () => {
                         {selectedRoute.location?.city}, {selectedRoute.location?.country}
                       </p>
                     </div>
-                    <div className="flex items-center space-x-2">
-                      <span className="text-2xl">{getTripTypeIcon(selectedRoute.tripType)}</span>
-                      <span className={`badge ${getStatusColor(selectedRoute.status)}`}>{selectedRoute.status}</span>
-                    </div>
                   </div>
                 </div>
                 <div className="card-body">
@@ -232,15 +243,15 @@ const SavedRoutes = () => {
 
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     <div className="text-center">
-                    <div className="text-2xl font-bold text-blue-600">
-                      {selectedRoute.formattedDistance ?? '—'}
-                    </div>
-                    <div className="text-sm text-gray-600">Distance</div>
+                      <div className="text-2xl font-bold text-blue-600">
+                        {selectedRoute.formattedDistance ?? '—'}
+                      </div>
+                      <div className="text-sm text-gray-600">Distance</div>
 
-                    <div className="text-2xl font-bold text-green-600">
-                      {selectedRoute.formattedDuration ?? '—'}
-                    </div>
-                    <div className="text-sm text-gray-600">Duration</div>
+                      <div className="text-2xl font-bold text-green-600">
+                        {selectedRoute.formattedDuration ?? '—'}
+                      </div>
+                      <div className="text-sm text-gray-600">Duration</div>
                     </div>
                     <div className="text-center">
                       <div className="text-2xl font-bold text-purple-600">
@@ -280,10 +291,45 @@ const SavedRoutes = () => {
                 </div>
               </div>
 
-              {/* Weather Forecast */}
-              {selectedRoute.weather && (
-                <WeatherCard weather={selectedRoute.weather} location={selectedRoute.location} />
-              )}
+              {/* Weather Forecast – כפתור לפי דרישה */}
+              <div className="card">
+                <div className="card-header flex items-center justify-between">
+                  <h3 className="text-lg font-semibold text-gray-900">Weather Forecast</h3>
+                  <button
+                    onClick={fetchWeather}
+                    disabled={weatherLoading || selectLoading || !selectedRoute}
+                    className="btn btn-secondary"
+                  >
+                    {weatherLoading ? (
+                      <>
+                        <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                        Loading...
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="h-4 w-4 mr-2" />
+                        {weatherData ? 'Refresh Weather' : 'Get Weather Forecast'}
+                      </>
+                    )}
+                  </button>
+                </div>
+                <div className="card-body">
+                  {weatherData ? (
+                    <WeatherCard
+                      weather={weatherData}
+                      location={{
+                        name: `${selectedRoute.location?.city || ''}${
+                          selectedRoute.location?.country ? ', ' + selectedRoute.location.country : ''
+                        }`
+                      }}
+                    />
+                  ) : (
+                    <p className="text-sm text-gray-500">
+                      Click “Get Weather Forecast” to load a 3-day forecast for this route’s starting point.
+                    </p>
+                  )}
+                </div>
+              </div>
 
               {/* Route Image */}
               {selectedRoute.image && (
